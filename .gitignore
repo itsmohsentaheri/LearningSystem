@@ -1,1 +1,6 @@
 __pycache__/
+*.pyc
+.venv/
+.env
+# generated artifacts (keep the sample graph for convenience)
+learner_profile*.json

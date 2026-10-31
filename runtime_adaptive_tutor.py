@@ -320,23 +320,74 @@ def present_question(question):
     for index, option in enumerate(question.get("options", []), 1):
         print("  %d) %s" % (index, option))
 
-def get_choice(question, simulated=False, simulated_correct=True):
-    present_question(question)
-    if simulated:
+
+# Interactive I/O adapters: ConsoleIO keeps the original stdin/stdout CLI
+# behaviour; alternative adapters (see gui_server.py) can render prompts in a
+# different UI while run() and helpers stay frontend-agnostic.
+PORTFOLIO_FIELDS = (("name", "نام یا نحوهٔ خطاب"), ("goal", "هدف اصلی یادگیری"),
+                    ("background", "پیش‌زمینه یا سطح فعلی"), ("preferences", "ترجیحات یادگیری / زبان"))
+
+
+class ConsoleIO:
+    """Default console implementation of every interactive prompt."""
+
+    def show(self, text):
+        print(text)
+
+    def ask_question(self, question, simulated=False, simulated_correct=True):
+        if simulated:
+            if question["type"] == "free_text":
+                response = question["accepted_answers"][0] if simulated_correct else "unmatched response"
+                log("Simulated textual answer.")
+                return response
+            choice = question["answer"] if simulated_correct else (question["answer"] + 1) % 4
+            log("Simulated answer: %d" % (choice + 1))
+            return choice
+        present_question(question)
         if question["type"] == "free_text":
-            response = question["accepted_answers"][0] if simulated_correct else "unmatched response"
-            log("Simulated textual answer.")
-            return response
-        choice = question["answer"] if simulated_correct else (question["answer"] + 1) % 4
-        log("Simulated answer: %d" % (choice + 1))
-        return choice
-    if question["type"] == "free_text":
-        return input("Your short answer: ").strip()
-    while True:
-        raw = input("Your answer (1-4): ").strip()
-        if raw in ("1", "2", "3", "4"):
-            return int(raw) - 1
-        print("Please enter a number from 1 to 4.")
+            return input("Your short answer: ").strip()
+        while True:
+            raw = input("Your answer (1-4): ").strip()
+            if raw in ("1", "2", "3", "4"):
+                return int(raw) - 1
+            print("Please enter a number from 1 to 4.")
+
+    def ask_retry_action(self, remediation_text):
+        if remediation_text:
+            print("Remediation: " + str(remediation_text))
+        return input("Enter R to retry, E for explanation, or Q to stop: ").strip().lower()
+
+    def ask_uncertain_action(self, feedback_text):
+        return input("[R]etry / [S]elf-rate correct / [N]ot sure (pause): ").strip().lower()
+
+    def ask_self_rating(self, feedback_text):
+        return input("Your self-rating: [1] confident/correct, [2] unsure/incorrect, [R] retry: ").strip().lower()
+
+    def ask_self_rating_again(self):
+        return input("Still uncertain. Self-rate [1] correct / [2] incorrect: ").strip()
+
+    def ask_portfolio_field(self, label, current):
+        return input("%s%s: " % (label, (" [%s]" % current) if current else "")).strip()
+
+
+def get_choice(io, question, simulated=False, simulated_correct=True):
+    return io.ask_question(question, simulated, simulated_correct)
+
+
+def ask_retry_action(io, remediation_text):
+    return io.ask_retry_action(remediation_text)
+
+
+def ask_uncertain_action(io, feedback_text):
+    return io.ask_uncertain_action(feedback_text)
+
+
+def ask_self_rating(io, feedback_text):
+    return io.ask_self_rating(feedback_text)
+
+
+def ask_self_rating_again(io):
+    return io.ask_self_rating_again()
 
 
 
@@ -586,10 +637,10 @@ def _chapter_groups(nodes):
     return groups
 
 
-def collect_portfolio(profile, path, force=False, simulated=False):
+def collect_portfolio(profile, path, force=False, simulated=False, io=None):
     """Collect and persist learner identity, goals, context, and preferences."""
-    fields = (("name", "نام یا نحوهٔ خطاب"), ("goal", "هدف اصلی یادگیری"),
-              ("background", "پیش‌زمینه یا سطح فعلی"), ("preferences", "ترجیحات یادگیری / زبان"))
+    ui = io or ConsoleIO()
+    fields = PORTFOLIO_FIELDS
     portfolio = profile.setdefault("portfolio", {})
     if not isinstance(portfolio, dict):
         portfolio = profile["portfolio"] = {}
@@ -603,11 +654,11 @@ def collect_portfolio(profile, path, force=False, simulated=False):
             if force or not str(portfolio.get(key, "")).strip():
                 portfolio[key] = defaults[key]
     else:
-        print("\nLearner portfolio — helps personalize the course.")
+        ui.show("\nLearner portfolio — helps personalize the course.")
         for key, label in fields:
             current = str(portfolio.get(key, ""))
             if force or not current.strip():
-                answer = input("%s%s: " % (label, (" [%s]" % current) if current else "")).strip()
+                answer = ui.ask_portfolio_field(label, current)
                 if answer:
                     portfolio[key] = answer
     profile["portfolio"] = portfolio
@@ -708,20 +759,21 @@ def _record_srs_review(scheduler, topic_id, graded, score=None, details=None):
         return None
 
 
-def _run_due_reviews(provider, profile, path, nodes_by_id, scheduler, due_reviews):
+def _run_due_reviews(provider, profile, path, nodes_by_id, scheduler, due_reviews, io=None):
     """Serve due spaced-repetition reviews before new material.
 
     Each due topic gets one short recall question; the outcome updates the
     FSRS state via record_review (a lapse triggers a remediation micro-lesson).
     """
+    ui = io or ConsoleIO()
     if not due_reviews:
         return
-    print("\nSpaced repetition: %d review(s) are due before new lessons." % len(due_reviews))
+    ui.show("\nSpaced repetition: %d review(s) are due before new lessons." % len(due_reviews))
     for item in due_reviews:
         topic_id = str(item.get("topic_id", ""))
         node = nodes_by_id.get(topic_id)
         title = item.get("title", topic_id)
-        print("\nDue review: %s | %s" % (title, item.get("explanation", "")))
+        ui.show("\nDue review: %s | %s" % (title, item.get("explanation", "")))
         if not node:
             log("Skipping due review; topic no longer exists in the graph: " + topic_id)
             profile.get("fsrs_reviews", {}).pop(topic_id, None)
@@ -734,14 +786,15 @@ def _run_due_reviews(provider, profile, path, nodes_by_id, scheduler, due_review
             _record_srs_review(scheduler, topic_id, None, details={"source": "spaced_repetition_review",
                                                                    "reason": "question_generation_failed"})
             continue
-        response = get_choice(question, provider.simulate, True)
+        response = get_choice(ui, question, provider.simulate, True)
         graded = grade_answer(question, response)
         feedback = _question_feedback(question, response, graded)
-        print(("Recalled. " if graded else "Review. ") + str(feedback))
+        ui.show(("Recalled. " if graded else "Review. ") + str(feedback))
         if graded is False:
             try:
                 lesson = provider.lesson(node, "Spaced-repetition review showed forgetting; rebuild the core idea.", fast_track=True)
-                print("Refresher micro-lesson: " + lesson["lesson"])
+                ui.show("Refresher micro-lesson: " + lesson["lesson"])
+                ui.show("Concept tip: " + lesson["tip"])
             except (ValueError, KeyError, TypeError) as exc:
                 log("Refresher lesson unavailable: %s" % exc)
         record_event(profile, path, "review_quiz_attempt", topic_id,
@@ -754,7 +807,8 @@ def _run_due_reviews(provider, profile, path, nodes_by_id, scheduler, due_review
                                                                  "question_type": question["type"]})
 
 
-def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_count, scheduler=None):
+def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_count, scheduler=None, io=None):
+    ui = io or ConsoleIO()
     states = profile.setdefault("chapter_quizzes", {})
     state = states.setdefault(chapter, {"status": "pending", "attempts": [], "completed": False})
     if state.get("completed"):
@@ -776,23 +830,24 @@ def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_coun
         kinds = ("scenario_mcq", "cloze_mcq", "free_text")
         kind = kinds[index % len(kinds)]
         question = provider.question(node, kind, profile)
-        print("\nChapter %s — question %d/%d (topic: %s)" % (chapter, index + 1, count, node.get("title", node["id"])))
-        response = get_choice(question, provider.simulate, True)
+        ui.show("\nChapter %s — question %d/%d (topic: %s)" % (chapter, index + 1, count, node.get("title", node["id"])))
+        response = get_choice(ui, question, provider.simulate, True)
         graded = grade_answer(question, response)
         if graded is None and not provider.simulate:
-            print("Feedback: " + _question_feedback(question, response, graded))
-            self_rating = input("Your self-rating: [1] confident/correct, [2] unsure/incorrect, [R] retry: ").strip().lower()
+            feedback_text = _question_feedback(question, response, graded)
+            ui.show("Feedback: " + feedback_text)
+            self_rating = ask_self_rating(ui, feedback_text)
             if self_rating == "r":
-                response = get_choice(question, False)
+                response = get_choice(ui, question, False)
                 graded = grade_answer(question, response)
                 if graded is None:
-                    self_rating = input("Still uncertain. Self-rate [1] correct / [2] incorrect: ").strip()
+                    self_rating = ask_self_rating_again(ui)
             if graded is None:
                 graded = True if self_rating == "1" else False
         correct_count += int(graded is True)
         uncertain += int(graded is None)
         feedback = _question_feedback(question, response, graded)
-        print(("Correct. " if graded else "Review. ") + str(feedback))
+        ui.show(("Correct. " if graded else "Review. ") + str(feedback))
         item = {"question": question["question"], "question_type": question["type"], "topic_id": node["id"],
                 "response": response if isinstance(response, str) else None,
                 "selected_option": response if isinstance(response, int) else None,
@@ -822,16 +877,19 @@ def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_coun
             node = by_id.get(topic_id)
             if not node:
                 continue
-            print("\nRevisiting lesson: " + node.get("title", topic_id))
+            ui.show("\nRevisiting lesson: " + node.get("title", topic_id))
             lesson = provider.lesson(node, "Chapter quiz showed an area to strengthen. Learner portfolio: %s" % profile.get("portfolio", {}), fast_track=False)
-            print("Remediation lesson: " + lesson["lesson"])
-            print("Concept tip: " + lesson["tip"])
+            ui.show("Remediation lesson: " + lesson["lesson"])
+            ui.show("Concept tip: " + lesson["tip"])
             record_event(profile, path, "chapter_remediation", topic_id, None, details={"chapter": chapter, "lesson": lesson["lesson"]})
         state["remediation_completed"] = True
         save_profile(path, profile)
 
 
-def run(args):
+def run(args, io=None):
+    """Execute a full adaptive session. `io` abstracts console interaction so
+    other frontends (e.g. gui_server.py) can reuse this logic unchanged."""
+    ui = io or ConsoleIO()
     graph, nodes = load_graph(args.graph)
     provider = ContentProvider(args.api_key, args.model, args.simulate)
     course = graph.get("course_name", "Curriculum")
@@ -843,7 +901,8 @@ def run(args):
         print(json.dumps(due, ensure_ascii=False, indent=2))
         return 0
     log("Due spaced-repetition reviews: %d" % len(due))
-    collect_portfolio(profile, pfile, force=bool(getattr(args, "update_portfolio", False)), simulated=provider.simulate)
+    collect_portfolio(profile, pfile, force=bool(getattr(args, "update_portfolio", False)),
+                      simulated=provider.simulate, io=ui)
     valid_ids = {n["id"] for n in nodes}
     mastered = set(profile.get("mastered_topics", [])) & valid_ids
     profile["mastered_topics"] = sorted(mastered)
@@ -856,7 +915,7 @@ def run(args):
         log("Starting a new learner journey. Profile: " + pfile)
 
     # Serve overdue FSRS reviews first so memory strengthening precedes new material.
-    _run_due_reviews(provider, profile, pfile, {n["id"]: n for n in nodes}, scheduler, due)
+    _run_due_reviews(provider, profile, pfile, {n["id"]: n for n in nodes}, scheduler, due, io=ui)
 
     # A compact scenario diagnostic informs lesson depth only; it never omits curriculum nodes.
     diag = profile.get("diagnostic_state")
@@ -883,19 +942,19 @@ def run(args):
             if index in completed_indices:
                 continue
             scenario_node = _diagnostic_node(batch, index)
-            print("\nScenario diagnostic %s (covers: %s)" %
-                  (progress(index + 1, len(batches)), ", ".join(n.get("title", n["id"]) for n in batch)))
+            ui.show("\nScenario diagnostic %s (covers: %s)" %
+                    (progress(index + 1, len(batches)), ", ".join(n.get("title", n["id"]) for n in batch)))
             try:
                 question = provider.question(scenario_node, "scenario_mcq", profile)
             except (ValueError, KeyError, TypeError) as exc:
                 log("Diagnostic scenario invalid; using local scenario fallback: %s" % exc)
                 question = validate_question(provider.mock_question(scenario_node, "scenario_mcq"), expected_type="scenario_mcq")
             simulated_correct = (index % 2 == 0)
-            response = get_choice(question, provider.simulate, simulated_correct)
+            response = get_choice(ui, question, provider.simulate, simulated_correct)
             graded = grade_answer(question, response)
             misconception = None if graded is not False else _question_feedback(question, response, graded)
             if graded is False:
-                print("Feedback: " + str(_question_feedback(question, response, graded)))
+                ui.show("Feedback: " + str(_question_feedback(question, response, graded)))
             # Record evidence only for explicitly covered topic IDs. Other topics have
             # no diagnostic result and consequently retain standard lesson depth.
             diag.setdefault("completed_question_indices", []).append(index)
@@ -932,20 +991,21 @@ def run(args):
         log("Unlocked topic: %s | %s lesson" % (title, "fast-track" if fast else "scaffolded"))
         context = "Learner portfolio: %s. Evidence: %s." % (profile.get("portfolio", {}), "diagnostic suggests prior mastery" if fast else "build understanding step by step")
         lesson = provider.lesson(node, context, fast_track=fast)
-        print("\nLesson: " + lesson["lesson"])
-        print("Concept tip: " + lesson["tip"])
+        ui.show("\nLesson: " + lesson["lesson"])
+        ui.show("Concept tip: " + lesson["tip"])
         record_event(profile, pfile, "micro_lesson", node["id"], None,
                      details={"lesson": lesson["lesson"], "tip": lesson["tip"], "track": "fast" if fast else "full"})
         question = provider.question(node, "lesson assessment quiz", profile)
         attempts = 0
         while True:
-            response = get_choice(question, provider.simulate, True)
+            response = get_choice(ui, question, provider.simulate, True)
             graded = grade_answer(question, response)
             if graded is None and not provider.simulate:
-                print("I cannot grade that wording confidently. " + question.get("explanation", ""))
-                action = input("[R]etry / [S]elf-rate correct / [N]ot sure (pause): ").strip().lower()
+                uncertain_text = "I cannot grade that wording confidently. " + question.get("explanation", "")
+                ui.show(uncertain_text)
+                action = ask_uncertain_action(ui, uncertain_text)
                 if action == "r":
-                    response = get_choice(question, False)
+                    response = get_choice(ui, question, False)
                     graded = grade_answer(question, response)
                 elif action == "s":
                     graded = True
@@ -965,30 +1025,31 @@ def run(args):
                 save_profile(pfile, profile)
                 log("Completed lesson: " + node["id"])
                 break
-            print("Feedback: " + str(_question_feedback(question, response, graded)))
+            feedback_text = str(_question_feedback(question, response, graded))
+            ui.show("Feedback: " + feedback_text)
             selected = question.get("options", [])[response] if isinstance(response, int) else response
             remediation = provider.remediation(node, question["question"], selected, misconception or "uncertain answer")
-            print("Remediation: " + remediation)
             if provider.simulate:
+                ui.show("Remediation: " + remediation)
                 continue
-            action = input("Enter R to retry, E for explanation, or Q to stop: ").strip().lower()
+            action = ask_retry_action(ui, remediation)
             if action == "q":
                 log("Session paused. Completed %d/%d topics." % (len(mastered), len(nodes)))
                 return 0
             if action == "e":
-                print("Explanation: " + question["explanation"])
+                ui.show("Explanation: " + question["explanation"])
         # Only trigger after every lesson in the chapter is completed.
         chapter = _chapter_for(node)
         chapter_nodes = groups[chapter]
         if all(n["id"] in mastered for n in chapter_nodes):
             _chapter_quiz(provider, profile, pfile, chapter, chapter_nodes,
-                          getattr(args, "chapter_quiz_questions", 3), scheduler)
+                          getattr(args, "chapter_quiz_questions", 3), scheduler, io=ui)
     # Existing completed chapters might be pending quiz after resume/legacy profile.
     for chapter in chapter_order:
         if all(n["id"] in mastered for n in groups[chapter]):
-            _chapter_quiz(provider, profile, pfile, chapter, groups[chapter], getattr(args, "chapter_quiz_questions", 3), scheduler)
+            _chapter_quiz(provider, profile, pfile, chapter, groups[chapter], getattr(args, "chapter_quiz_questions", 3), scheduler, io=ui)
     log("Course complete! All %d curriculum topics were taught and completed." % len(nodes))
-    print("Mastered topics: " + ", ".join(n["id"] for n in nodes if n["id"] in mastered))
+    ui.show("Mastered topics: " + ", ".join(n["id"] for n in nodes if n["id"] in mastered))
     return 0
 
 def main(argv=None):
