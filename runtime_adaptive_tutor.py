@@ -351,16 +351,28 @@ def _as_utc_datetime(value=None):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 def normalize_fsrs_rating(rating):
-    """Normalize FSRS ratings 1..4 or correctness scores 0..1 to 1..4."""
+    """Normalize FSRS ratings 1..4 or correctness scores 0..1 to 1..4.
+
+    Conventions (FSRS/SM-2): Again=1, Hard=2, Good=3, Easy=4; scores map
+    0->Again, <0.6->Hard, <0.85->Good, >=0.85->Easy. Ambiguous inputs are
+    resolved deliberately: bool True -> Good(3) / False -> Again(1) (booleans
+    are outcomes, not ratings -- float(True)==1.0 would otherwise read as a
+    perfect score -> Easy); int 1 -> Again(1) (checked before the score range,
+    since an explicit rating beats the coincidental overlap with score 1.0);
+    float 1.0 -> Easy(4) (a perfect numeric score).
+    """
     if isinstance(rating, bool):
-        rating = float(rating)
+        return 3 if rating else 1
+    # Exact integer ratings take priority over the overlapping 0..1 score band.
+    if isinstance(rating, int) and 1 <= rating <= 4:
+        return rating
     value = float(rating)
-    if not 0.0 <= value <= 1.0:
-        if value.is_integer() and 1 <= int(value) <= 4:
-            return int(value)
-        raise ValueError("rating must be an FSRS rating (1..4) or score (0..1)")
-    # Correctness score maps to Again / Hard / Good / Easy.
-    return 1 if value < .4 else 2 if value < .6 else 3 if value < .85 else 4
+    if 0.0 <= value <= 1.0:
+        # Correctness score maps to Again / Hard / Good / Easy.
+        return 1 if value < .4 else 2 if value < .6 else 3 if value < .85 else 4
+    if value.is_integer() and 1 <= int(value) <= 4:
+        return int(value)
+    raise ValueError("rating must be an FSRS rating (1..4) or score (0..1)")
 
 def calculate_difficulty(previous_difficulty, rating):
     rating = normalize_fsrs_rating(rating)
@@ -666,11 +678,15 @@ def _record_srs_review(scheduler, topic_id, graded, score=None, details=None):
     Explicit 1..4 integer ratings are passed through untouched. Boolean/None
     outcomes (correct / incorrect / uncertain) map directly to FSRS ratings:
     True -> Good(3), False -> Again(1), None -> Hard(2) so uncertain answers
-    reschedule sooner than normal recalls.
+    reschedule sooner than normal recalls. Uncertain reviews also get an XAI
+    hint in their stored attempt. The numeric score channel is reserved for
+    real scores: passing booleans there silently coerces via float() (True ->
+    Easy, False -> Again), so graded outcomes always go through `rating`.
     """
     if scheduler is None or not topic_id:
         return None
     try:
+        details = dict(details) if details else {}
         if isinstance(graded, int) and not isinstance(graded, bool) and 1 <= graded <= 4:
             rating = graded
         elif graded is True:
@@ -679,6 +695,7 @@ def _record_srs_review(scheduler, topic_id, graded, score=None, details=None):
             rating = 1
         else:
             rating = 2
+            details.setdefault("xai_hint", "uncertain_answer_rescheduled_with_hard_rating")
         # Pass score only when it is a real numeric score; never a boolean outcome.
         state = scheduler.record_review(topic_id, rating=rating,
                                         score=(float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None),
