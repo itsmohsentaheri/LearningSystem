@@ -241,9 +241,8 @@ def _gui_collect_portfolio(profile, path, force=False, simulated=False, io=None)
     missing = not all(str(portfolio.get(key, "")).strip() for key, _ in fields)
     if not force and not missing:
         return portfolio
-    if simulated:
-        # Offline mock keeps the CLI defaults; no prompt needed.
-        return _ORIG_COLLECT_PORTFOLIO(profile, path, force, simulated, io=tutor.ConsoleIO())
+    # A GUI learner always gets the one-time personalization form, even in
+    # simulate mode: mock content must not skip human interaction here.
     descriptors = [{"key": key, "label": label, "value": str(portfolio.get(key, ""))}
                    for key, label in fields]
     values = session.await_prompt({"event": "form", "kind": "form",
@@ -255,6 +254,9 @@ def _gui_collect_portfolio(profile, path, force=False, simulated=False, io=None)
         value = str(values.get(key, "")).strip()
         if value:
             portfolio[key] = value
+    # Mark the form as answered so a resumed GUI session is not re-asked;
+    # CLI sessions keep their own "all fields present" skip logic.
+    portfolio["gui_portfolio_done"] = True
     profile["portfolio"] = portfolio
     tutor.save_profile(path, profile)
     return portfolio

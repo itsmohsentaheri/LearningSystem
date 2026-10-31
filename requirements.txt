@@ -1,0 +1,5 @@
+# Core runtime dependencies for the adaptive tutor project.
+networkx>=3.0        # curriculum dependency graph (DAG operations)
+requests>=2.28       # OpenRouter HTTP calls with retry/backoff
+pydantic>=2.0        # schema validation of LLM output (v1 also supported via shim)
+flask>=2.2           # browser GUI server (gui_server.py)
