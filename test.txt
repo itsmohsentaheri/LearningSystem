@@ -1,0 +1,7 @@
+Course: AI Tools for Engineers
+1. Introduction to Generative AI & Foundation Models: Understand core concepts of generative models, historical evolution from discriminative AI, and the fundamental architecture of large foundation models.
+2. Text Generation & Large Language Models (Prompting, Tokens): Master prompt engineering techniques, tokenization mechanics, and managing context windows for effective text generation.
+3. Image Generation Models (Diffusion, Midjourney, Stable Diffusion): Explore state-of-the-art image generation, including denoising diffusion probabilistic models, latent spaces, and practical styling in Midjourney.
+4. Audio & Voice AI (TTS, Voice Cloning, AudioCraft): Learn modern text-to-speech synthesis, voice cloning ethics, and audio generation via AudioCraft.
+5. Video Generation & Motion Synthesis (Runway, Sora concepts): Examine video generation frameworks, temporal consistency in motion synthesis, and Runway/Sora architectures.
+6. AI Coding & Developer Tools (Copilot, Cursor, Code Completion): Integrate AI pair programmers and context-aware code completers into daily developer workflows.
