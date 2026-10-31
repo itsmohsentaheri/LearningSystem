@@ -351,16 +351,28 @@ def _as_utc_datetime(value=None):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 def normalize_fsrs_rating(rating):
-    """Normalize FSRS ratings 1..4 or correctness scores 0..1 to 1..4."""
+    """Normalize FSRS ratings 1..4 or correctness scores 0..1 to 1..4.
+
+    Conventions (FSRS/SM-2): Again=1, Hard=2, Good=3, Easy=4; scores map
+    0->Again, <0.6->Hard, <0.85->Good, >=0.85->Easy. Ambiguous inputs are
+    resolved deliberately: bool True -> Good(3) / False -> Again(1) (booleans
+    are outcomes, not ratings -- float(True)==1.0 would otherwise read as a
+    perfect score -> Easy); int 1 -> Again(1) (checked before the score range,
+    since an explicit rating beats the coincidental overlap with score 1.0);
+    float 1.0 -> Easy(4) (a perfect numeric score).
+    """
     if isinstance(rating, bool):
-        rating = float(rating)
+        return 3 if rating else 1
+    # Exact integer ratings take priority over the overlapping 0..1 score band.
+    if isinstance(rating, int) and 1 <= rating <= 4:
+        return rating
     value = float(rating)
-    if not 0.0 <= value <= 1.0:
-        if value.is_integer() and 1 <= int(value) <= 4:
-            return int(value)
-        raise ValueError("rating must be an FSRS rating (1..4) or score (0..1)")
-    # Correctness score maps to Again / Hard / Good / Easy.
-    return 1 if value < .4 else 2 if value < .6 else 3 if value < .85 else 4
+    if 0.0 <= value <= 1.0:
+        # Correctness score maps to Again / Hard / Good / Easy.
+        return 1 if value < .4 else 2 if value < .6 else 3 if value < .85 else 4
+    if value.is_integer() and 1 <= int(value) <= 4:
+        return int(value)
+    raise ValueError("rating must be an FSRS rating (1..4) or score (0..1)")
 
 def calculate_difficulty(previous_difficulty, rating):
     rating = normalize_fsrs_rating(rating)
@@ -660,7 +672,89 @@ def _question_feedback(question, response, graded):
     return question.get("explanation", "پاسخ با کلیدواژه‌های مورد انتظار تطبیق نداشت؛ ممکن است بیان دیگری درست باشد.")
 
 
-def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_count):
+def _record_srs_review(scheduler, topic_id, graded, score=None, details=None):
+    """Feed a graded attempt into the FSRS scheduler; never let it break the lesson flow.
+
+    Explicit 1..4 integer ratings are passed through untouched. Boolean/None
+    outcomes (correct / incorrect / uncertain) map directly to FSRS ratings:
+    True -> Good(3), False -> Again(1), None -> Hard(2) so uncertain answers
+    reschedule sooner than normal recalls. Uncertain reviews also get an XAI
+    hint in their stored attempt. The numeric score channel is reserved for
+    real scores: passing booleans there silently coerces via float() (True ->
+    Easy, False -> Again), so graded outcomes always go through `rating`.
+    """
+    if scheduler is None or not topic_id:
+        return None
+    try:
+        details = dict(details) if details else {}
+        if isinstance(graded, int) and not isinstance(graded, bool) and 1 <= graded <= 4:
+            rating = graded
+        elif graded is True:
+            rating = 3
+        elif graded is False:
+            rating = 1
+        else:
+            rating = 2
+            details.setdefault("xai_hint", "uncertain_answer_rescheduled_with_hard_rating")
+        # Pass score only when it is a real numeric score; never a boolean outcome.
+        state = scheduler.record_review(topic_id, rating=rating,
+                                        score=(float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None),
+                                        details=details)
+        log("FSRS update for %s: rating=%d, interval=%dd, next review %s" %
+            (topic_id, state["last_rating"], state["interval_days"], state["due_date"]))
+        return state
+    except (ValueError, TypeError, OSError) as exc:
+        log("FSRS review could not be recorded for %s: %s" % (topic_id, exc))
+        return None
+
+
+def _run_due_reviews(provider, profile, path, nodes_by_id, scheduler, due_reviews):
+    """Serve due spaced-repetition reviews before new material.
+
+    Each due topic gets one short recall question; the outcome updates the
+    FSRS state via record_review (a lapse triggers a remediation micro-lesson).
+    """
+    if not due_reviews:
+        return
+    print("\nSpaced repetition: %d review(s) are due before new lessons." % len(due_reviews))
+    for item in due_reviews:
+        topic_id = str(item.get("topic_id", ""))
+        node = nodes_by_id.get(topic_id)
+        title = item.get("title", topic_id)
+        print("\nDue review: %s | %s" % (title, item.get("explanation", "")))
+        if not node:
+            log("Skipping due review; topic no longer exists in the graph: " + topic_id)
+            profile.get("fsrs_reviews", {}).pop(topic_id, None)
+            save_profile(path, profile)
+            continue
+        try:
+            question = provider.question(node, "cloze_mcq", profile)
+        except (ValueError, KeyError, TypeError) as exc:
+            log("Review question unavailable for %s (%s); rescheduling tomorrow." % (topic_id, exc))
+            _record_srs_review(scheduler, topic_id, None, details={"source": "spaced_repetition_review",
+                                                                   "reason": "question_generation_failed"})
+            continue
+        response = get_choice(question, provider.simulate, True)
+        graded = grade_answer(question, response)
+        feedback = _question_feedback(question, response, graded)
+        print(("Recalled. " if graded else "Review. ") + str(feedback))
+        if graded is False:
+            try:
+                lesson = provider.lesson(node, "Spaced-repetition review showed forgetting; rebuild the core idea.", fast_track=True)
+                print("Refresher micro-lesson: " + lesson["lesson"])
+            except (ValueError, KeyError, TypeError) as exc:
+                log("Refresher lesson unavailable: %s" % exc)
+        record_event(profile, path, "review_quiz_attempt", topic_id,
+                     1 if graded is True else (0 if graded is False else None),
+                     None if graded else feedback,
+                     {"source": "spaced_repetition_review", "question": question["question"],
+                      "selected_option": response if isinstance(response, int) else None,
+                      "response": response if isinstance(response, str) else None})
+        _record_srs_review(scheduler, topic_id, graded, details={"source": "spaced_repetition_review",
+                                                                 "question_type": question["type"]})
+
+
+def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_count, scheduler=None):
     states = profile.setdefault("chapter_quizzes", {})
     state = states.setdefault(chapter, {"status": "pending", "attempts": [], "completed": False})
     if state.get("completed"):
@@ -707,6 +801,8 @@ def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_coun
         state["attempts"].append(item)
         record_event(profile, path, "chapter_quiz_attempt", node["id"], 1 if graded is True else (0 if graded is False else None),
                      None if graded else feedback, {"chapter": chapter, "question_type": question["type"], "question": question["question"]})
+        _record_srs_review(scheduler, node["id"], graded, details={"source": "chapter_quiz", "chapter": chapter,
+                                                                   "question_type": question["type"]})
     score = correct_count / float(count)
     threshold = float(getattr(provider, "chapter_pass_threshold", 0.7))
     weak = score < threshold
@@ -758,6 +854,9 @@ def run(args):
         log("Loaded learner profile: " + pfile)
     else:
         log("Starting a new learner journey. Profile: " + pfile)
+
+    # Serve overdue FSRS reviews first so memory strengthening precedes new material.
+    _run_due_reviews(provider, profile, pfile, {n["id"]: n for n in nodes}, scheduler, due)
 
     # A compact scenario diagnostic informs lesson depth only; it never omits curriculum nodes.
     diag = profile.get("diagnostic_state")
@@ -858,6 +957,8 @@ def run(args):
             record_event(profile, pfile, "quiz_attempt", node["id"], 1 if graded is True else (0 if graded is False else None), misconception,
                          {"attempt": attempts, "question": question["question"], "selected_option": response if isinstance(response, int) else None,
                           "response": response if isinstance(response, str) else None, "question_type": question["type"]})
+            _record_srs_review(scheduler, node["id"], graded, details={"source": "lesson_quiz", "attempt": attempts,
+                                                                       "question_type": question["type"]})
             if graded is True:
                 mastered.add(node["id"])
                 profile["mastered_topics"] = sorted(mastered)
@@ -881,11 +982,11 @@ def run(args):
         chapter_nodes = groups[chapter]
         if all(n["id"] in mastered for n in chapter_nodes):
             _chapter_quiz(provider, profile, pfile, chapter, chapter_nodes,
-                          getattr(args, "chapter_quiz_questions", 3))
+                          getattr(args, "chapter_quiz_questions", 3), scheduler)
     # Existing completed chapters might be pending quiz after resume/legacy profile.
     for chapter in chapter_order:
         if all(n["id"] in mastered for n in groups[chapter]):
-            _chapter_quiz(provider, profile, pfile, chapter, groups[chapter], getattr(args, "chapter_quiz_questions", 3))
+            _chapter_quiz(provider, profile, pfile, chapter, groups[chapter], getattr(args, "chapter_quiz_questions", 3), scheduler)
     log("Course complete! All %d curriculum topics were taught and completed." % len(nodes))
     print("Mastered topics: " + ", ".join(n["id"] for n in nodes if n["id"] in mastered))
     return 0
