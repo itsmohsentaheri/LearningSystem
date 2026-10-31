@@ -1,0 +1,112 @@
+{
+  "course_name": "AI Tools",
+  "description": "Offline scope-based curriculum graph.",
+  "nodes": [
+    {
+      "id": "ai_fundamentals_lesson_01",
+      "title": "Foundations of AI Fundamentals",
+      "description": "Learn and apply AI Fundamentals to support chapter goal: Understand core AI concepts and limitations",
+      "prerequisites": [],
+      "bloom_level": "Understand",
+      "estimated_minutes": 15,
+      "module_id": "ai_fundamentals",
+      "module_title": "AI Fundamentals",
+      "lesson_index": 1,
+      "chapter_goal": "Understand core AI concepts and limitations",
+      "subtopics": []
+    },
+    {
+      "id": "text_generation_prompting_tokens_lesson_01",
+      "title": "Apply Prompting",
+      "description": "Learn and apply Prompting to support chapter goal: Create and assess generated text; mapped subtopic: Prompting",
+      "prerequisites": [
+        "ai_fundamentals_lesson_01"
+      ],
+      "bloom_level": "Understand",
+      "estimated_minutes": 15,
+      "module_id": "text_generation_prompting_tokens",
+      "module_title": "Text Generation (Prompting, Tokens)",
+      "lesson_index": 1,
+      "chapter_goal": "Create and assess generated text",
+      "subtopics": [
+        "Prompting",
+        "Tokens"
+      ]
+    },
+    {
+      "id": "text_generation_prompting_tokens_lesson_02",
+      "title": "Practice Tokens",
+      "description": "Learn and apply Tokens to support chapter goal: Create and assess generated text; mapped subtopic: Tokens",
+      "prerequisites": [
+        "text_generation_prompting_tokens_lesson_01"
+      ],
+      "bloom_level": "Apply",
+      "estimated_minutes": 15,
+      "module_id": "text_generation_prompting_tokens",
+      "module_title": "Text Generation (Prompting, Tokens)",
+      "lesson_index": 2,
+      "chapter_goal": "Create and assess generated text",
+      "subtopics": [
+        "Prompting",
+        "Tokens"
+      ]
+    },
+    {
+      "id": "multimedia_tools_image_generation_audio_generation_evaluation_lesson_01",
+      "title": "Apply Image Generation",
+      "description": "Learn and apply Image Generation to support chapter goal: Compare generated media; mapped subtopic: Image Generation",
+      "prerequisites": [
+        "text_generation_prompting_tokens_lesson_02"
+      ],
+      "bloom_level": "Understand",
+      "estimated_minutes": 15,
+      "module_id": "multimedia_tools_image_generation_audio_generation_evaluation",
+      "module_title": "Multimedia Tools (Image Generation, Audio Generation, Evaluation)",
+      "lesson_index": 1,
+      "chapter_goal": "Compare generated media",
+      "subtopics": [
+        "Image Generation",
+        "Audio Generation",
+        "Evaluation"
+      ]
+    },
+    {
+      "id": "multimedia_tools_image_generation_audio_generation_evaluation_lesson_02",
+      "title": "Practice Audio Generation",
+      "description": "Learn and apply Audio Generation to support chapter goal: Compare generated media; mapped subtopic: Audio Generation",
+      "prerequisites": [
+        "multimedia_tools_image_generation_audio_generation_evaluation_lesson_01"
+      ],
+      "bloom_level": "Apply",
+      "estimated_minutes": 15,
+      "module_id": "multimedia_tools_image_generation_audio_generation_evaluation",
+      "module_title": "Multimedia Tools (Image Generation, Audio Generation, Evaluation)",
+      "lesson_index": 2,
+      "chapter_goal": "Compare generated media",
+      "subtopics": [
+        "Image Generation",
+        "Audio Generation",
+        "Evaluation"
+      ]
+    },
+    {
+      "id": "multimedia_tools_image_generation_audio_generation_evaluation_lesson_03",
+      "title": "Practice Evaluation",
+      "description": "Learn and apply Evaluation to support chapter goal: Compare generated media; mapped subtopic: Evaluation",
+      "prerequisites": [
+        "multimedia_tools_image_generation_audio_generation_evaluation_lesson_02"
+      ],
+      "bloom_level": "Apply",
+      "estimated_minutes": 15,
+      "module_id": "multimedia_tools_image_generation_audio_generation_evaluation",
+      "module_title": "Multimedia Tools (Image Generation, Audio Generation, Evaluation)",
+      "lesson_index": 3,
+      "chapter_goal": "Compare generated media",
+      "subtopics": [
+        "Image Generation",
+        "Audio Generation",
+        "Evaluation"
+      ]
+    }
+  ]
+}
