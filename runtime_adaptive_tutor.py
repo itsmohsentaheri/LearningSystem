@@ -262,16 +262,65 @@ class ContentProvider:
                     "tip": "Tip: state the goal clearly, try one small example, and verify the result."}
         log("[LLM] Generating real-time micro-lesson for '%s' via OpenRouter..." % node["id"])
         depth = ("Use a concise fast-track recap (roughly 50-80 words), clarify one nuance, and still teach/test this topic; do not omit it. "
-                 if fast_track else "Use a scaffolded micro-lesson (roughly 100-150 words) that explains the concept and one example. ")
-        prompt = ("Write a crisp, tailored, interactive micro-lesson for topic %s: %s. %s"
-                  "Include one question or action for the learner and a practical concept tip. "
-                  "Adapt to this learner context: %s. Return JSON only with keys lesson and tip." %
-                  (node.get("title", node["id"]), node.get("description", ""), depth, learner_context))
-        result = _extract_json(self.ask(prompt, "You are an expert tutor. Keep language clear and supportive."))
-        lesson = str(result.get("lesson", ""))
-        if len(lesson.split()) > 165:
-            lesson = " ".join(lesson.split()[:150])
-        return {"lesson": lesson, "tip": str(result.get("tip", ""))}
+                 if fast_track else "Use a scaffolded micro-lesson (roughly 120-180 words). ")
+        subtopics = ", ".join(str(s) for s in (node.get("subtopics") or []) if str(s).strip()) or "the core idea of this topic"
+        structure = ("The lesson body MUST be structured plain text (no JSON, no markdown headings) organized under these exact section labels: "
+                     "1) Explanation: teach the concept itself (what it is, why it matters, how it works) - never just restate the goal sentence. "
+                     "2) Worked example: one concrete, realistic mini-scenario with steps showing the concept in action. "
+                     "3) Common pitfalls: one mistake beginners make and how to avoid it. "
+                     "4) Your turn: one small actionable exercise for the learner.")
+        prompt = ("Write a substantive, tailored micro-lesson for topic '%s' (%s). Chapter goal: %s. Subtopics to cover: %s. %s"
+                  "Learner context: %s. Reply ONLY with a JSON object with keys 'lesson' (sections 1-4 as plain text) and 'tip' (one practical takeaway)." %
+                  (node.get("title", node["id"]), node.get("description", ""),
+                   node.get("chapter_goal", ""), subtopics, depth + structure, learner_context))
+        system = ("You are an expert instructional designer. Teach the actual content of the topic, not meta-commentary about learning it. "
+                  "Follow the requested section labels exactly. Return JSON only.")
+
+        def _generate(extra=""):
+            """Ask the model once and quality-check the reply; raise if unusable."""
+            result = _extract_json(self.ask(prompt, system + extra))
+            body = str(result.get("lesson", "")).strip()
+            tip = str(result.get("tip", "")).strip()
+            # Reject thin/unstructured prose: the learner must get real teaching,
+            # never a one-line restatement that reads like a quiz instruction.
+            if len(body.split()) < 40 or not body.lower().startswith(("1)", "1 )", "explanation")):
+                raise ValueError("lesson response was too short or unstructured")
+            return body, tip
+
+        try:
+            lesson, tip = _generate()
+        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+            log("Micro-lesson generation failed (%s); retrying once with strict format..." % exc)
+            try:
+                lesson, tip = _generate(" Previous attempt was rejected: keep every required section and teach substantive content.")
+            except (RuntimeError, ValueError, KeyError, TypeError):
+                # Final guarantee: the learner is NEVER left with only questions.
+                # Fall back to a deterministic lesson built from graph metadata.
+                log("Micro-lesson retry failed; using local fallback lesson so teaching always happens.")
+                lesson = self._fallback_lesson(node, fast_track)
+                tip = "Tip: state the goal clearly, try one small example, and verify the result."
+        if len(lesson.split()) > 320:
+            lesson = " ".join(lesson.split()[:300])
+        return {"lesson": lesson, "tip": tip or "Tip: restate the concept in your own words before answering the quiz."}
+
+    @staticmethod
+    def _fallback_lesson(node, fast_track=False):
+        """Deterministic lesson assembled from graph metadata (never empty)."""
+        title = node.get("title", node["id"])
+        desc = node.get("description", "apply the core skill of this topic")
+        goal = node.get("chapter_goal", "")
+        subtopics = [str(s) for s in (node.get("subtopics") or []) if str(s).strip()]
+        parts = ["1) Explanation: %s covers %s." % (title, desc)]
+        if goal:
+            parts.append("This supports the chapter goal: %s." % goal)
+        if subtopics:
+            parts.append("Key ideas to hold onto: " + ", ".join(subtopics) + ".")
+        parts.append("2) Worked example: pick one concrete task that uses this idea, define the expected outcome first, then execute it in one small step.")
+        parts.append("3) Common pitfall: applying the tool without checking outputs against the stated goal.")
+        parts.append("4) Your turn: before the quiz, restate in one sentence what problem this topic solves.")
+        if fast_track:
+            parts.insert(1, "(Fast track: you showed prior evidence on this topic, so this is a concise recap.)")
+        return "\n".join(parts)
 
     def remediation(self, node, question, selected, feedback):
         if self.simulate:
@@ -333,6 +382,12 @@ class ConsoleIO:
 
     def show(self, text):
         print(text)
+
+    def show_lesson(self, header, lesson_text, tip):
+        """Render a teaching block; adapters may override for richer display."""
+        self.show("\n" + header + "\n" + str(lesson_text))
+        if tip:
+            self.show("Concept tip: " + str(tip))
 
     def ask_question(self, question, simulated=False, simulated_correct=True):
         if simulated:
@@ -793,8 +848,7 @@ def _run_due_reviews(provider, profile, path, nodes_by_id, scheduler, due_review
         if graded is False:
             try:
                 lesson = provider.lesson(node, "Spaced-repetition review showed forgetting; rebuild the core idea.", fast_track=True)
-                ui.show("Refresher micro-lesson: " + lesson["lesson"])
-                ui.show("Concept tip: " + lesson["tip"])
+                ui.show_lesson("Refresher micro-lesson: " + title, lesson["lesson"], lesson["tip"])
             except (ValueError, KeyError, TypeError) as exc:
                 log("Refresher lesson unavailable: %s" % exc)
         record_event(profile, path, "review_quiz_attempt", topic_id,
@@ -879,8 +933,7 @@ def _chapter_quiz(provider, profile, path, chapter, chapter_nodes, question_coun
                 continue
             ui.show("\nRevisiting lesson: " + node.get("title", topic_id))
             lesson = provider.lesson(node, "Chapter quiz showed an area to strengthen. Learner portfolio: %s" % profile.get("portfolio", {}), fast_track=False)
-            ui.show("Remediation lesson: " + lesson["lesson"])
-            ui.show("Concept tip: " + lesson["tip"])
+            ui.show_lesson("Remediation lesson: " + node.get("title", topic_id), lesson["lesson"], lesson["tip"])
             record_event(profile, path, "chapter_remediation", topic_id, None, details={"chapter": chapter, "lesson": lesson["lesson"]})
         state["remediation_completed"] = True
         save_profile(path, profile)
@@ -991,8 +1044,7 @@ def run(args, io=None):
         log("Unlocked topic: %s | %s lesson" % (title, "fast-track" if fast else "scaffolded"))
         context = "Learner portfolio: %s. Evidence: %s." % (profile.get("portfolio", {}), "diagnostic suggests prior mastery" if fast else "build understanding step by step")
         lesson = provider.lesson(node, context, fast_track=fast)
-        ui.show("\nLesson: " + lesson["lesson"])
-        ui.show("Concept tip: " + lesson["tip"])
+        ui.show_lesson("Lesson — %s" % title, lesson["lesson"], lesson["tip"])
         record_event(profile, pfile, "micro_lesson", node["id"], None,
                      details={"lesson": lesson["lesson"], "tip": lesson["tip"], "track": "fast" if fast else "full"})
         question = provider.question(node, "lesson assessment quiz", profile)

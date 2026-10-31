@@ -47,6 +47,12 @@ class WebIO(tutor.ConsoleIO):
         if lines:
             self.session.emit({"event": "info", "lines": [ln.strip() for ln in lines]})
 
+    def show_lesson(self, header, lesson_text, tip):
+        """Render teaching content as a dedicated card (not a bare info line)."""
+        self.session.emit({"event": "lesson", "header": str(header),
+                           "body": str(lesson_text or ""),
+                           "tip": str(tip or "")})
+
     def ask_question(self, question, simulated=False, simulated_correct=True):
         # In the GUI even "--simulate" content must be answered by a human.
         payload = {"type": question["type"], "question": question["question"],
@@ -403,6 +409,12 @@ PAGE_TEMPLATE = r"""<!doctype html>
   .log .t { color:var(--muted); margin-left:8px; }
   .muted { color:var(--muted); font-size:12.5px; }
   .pill-ok{color:var(--ok)} .pill-bad{color:var(--bad)} .pill-warn{color:var(--warn)}
+  .lesson-card { border:1px solid var(--line); border-right:4px solid #7c5cff; background:#1b1d29;
+                 border-radius:10px; padding:14px 16px; margin:10px 0; }
+  .lesson-card h3 { margin:0 0 8px; font-size:15px; color:#b9a6ff; }
+  .lesson-card .body { white-space:pre-wrap; line-height:1.9; font-size:14px; }
+  .lesson-card .tip { margin-top:10px; padding:8px 10px; background:#232637; border-radius:8px;
+                      font-size:13px; color:#ffd479; }
   #toast { position:fixed; bottom:18px; left:18px; background:#223049; padding:10px 16px;
            border-radius:10px; border:1px solid #334155; display:none; font-size:13px; }
 </style>
@@ -419,6 +431,7 @@ PAGE_TEMPLATE = r"""<!doctype html>
   <section>
     <div class="card">
       <h2>تعامل</h2>
+      <div id="feed" style="max-height:260px;overflow:auto;margin-bottom:10px"></div>
       <div id="interaction" class="muted">برای شروع روی «شروع / ادامه جلسه» کلیک کنید.</div>
     </div>
     <div class="card">
@@ -485,7 +498,24 @@ function appendLogs(lines){ (lines||[]).forEach(l=>{
 function renderEvent(ev){
   appendLogs(ev.logs);
   const el = $('interaction');
-  if(ev.event==='info'){ el.innerHTML = '<div class="qtext">'+ev.lines.map(esc).join('<br>')+'</div>'; return; }
+  if(ev.event==='info'){
+    // Keep informational lines (feedback, progress notes) in a scrolling feed.
+    const feed=$('feed'); const div=document.createElement('div');
+    div.className='qtext'; div.style.marginBottom='6px';
+    div.innerHTML=ev.lines.map(esc).join('<br>');
+    feed.appendChild(div); feed.scrollTop=feed.scrollHeight;
+    return;
+  }
+  if(ev.event==='lesson'){
+    // Teaching content gets its own persistent card so lessons stay readable.
+    const feed=$('feed'); const card=document.createElement('div');
+    card.className='lesson-card';
+    card.innerHTML='<h3>📘 '+esc(ev.header)+'</h3><div class="body">'+esc(ev.body)+'</div>'+
+      (ev.tip? '<div class="tip">💡 '+esc(ev.tip)+'</div>' : '');
+    feed.appendChild(card); feed.scrollTop=feed.scrollHeight;
+    el.innerHTML='<div class="muted">آماده‌اید؟ به سؤال بعدی پاسخ دهید.</div>';
+    return;
+  }
   if(ev.event==='question'){
     const q = ev.question;
     let html = '<div class="qtext">'+esc(q.question)+'</div>';
